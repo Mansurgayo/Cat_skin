@@ -1,10 +1,37 @@
 import os
 import streamlit as st
-import tensorflow as tf
+try:
+    import tensorflow as tf
+    HAVE_TF = True
+except Exception:
+    tf = None
+    HAVE_TF = False
 from PIL import Image
 import numpy as np
 import requests
 from urllib.parse import urlparse
+
+
+def remote_predict(api_url, image_bytes):
+    """Send image bytes to remote model API. Expects JSON with key 'predictions' or 'probs'."""
+    try:
+        files = {"file": ("image.jpg", image_bytes, "image/jpeg")}
+        resp = requests.post(api_url, files=files, timeout=60)
+        resp.raise_for_status()
+        data = resp.json()
+        # try common keys
+        for key in ("predictions", "probs", "probabilities", "preds"):
+            if key in data:
+                arr = np.asarray(data[key], dtype=float)
+                return arr
+        # if response is a list
+        if isinstance(data, list):
+            return np.asarray(data, dtype=float)
+        # fallback: look for single probability
+        if "prediction" in data:
+            return np.asarray([data["prediction"]], dtype=float)
+    except Exception:
+        return None
 
 
 def download_model_from_env():
