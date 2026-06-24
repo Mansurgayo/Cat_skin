@@ -3,6 +3,41 @@ import streamlit as st
 import tensorflow as tf
 from PIL import Image
 import numpy as np
+import requests
+from urllib.parse import urlparse
+
+
+def download_model_from_env():
+    """Download model from environment variable MODEL_URL to model folder.
+    Optional env var MODEL_FILENAME sets the target filename.
+    Returns local path if downloaded or already exists, else None.
+    """
+    url = os.environ.get("MODEL_URL")
+    if not url:
+        return None
+    try:
+        os.makedirs(MODEL_DIR, exist_ok=True)
+        filename = os.environ.get("MODEL_FILENAME")
+        if not filename:
+            parsed = urlparse(url)
+            filename = os.path.basename(parsed.path) or None
+        # fallback to first known model filename
+        if not filename:
+            filename = next(iter(MODEL_DISPLAY_NAMES.values()), None)
+        if not filename:
+            return None
+        save_path = os.path.join(MODEL_DIR, filename)
+        if os.path.exists(save_path):
+            return save_path
+        with requests.get(url, stream=True, timeout=60) as r:
+            r.raise_for_status()
+            with open(save_path, "wb") as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+        return save_path
+    except Exception:
+        return None
 import pandas as pd
 
 
@@ -99,6 +134,26 @@ def main():
 
     available_models = [name for name in MODEL_DISPLAY_NAMES]
     model_choice = st.sidebar.selectbox("Select model", available_models)
+
+    # optional: allow user to provide public URL to download model file
+    sel_filename = MODEL_DISPLAY_NAMES.get(model_choice)
+    model_url_input = st.sidebar.text_input("Model file URL (optional)", value="")
+    if model_url_input:
+        if st.sidebar.button("Download model"):
+            try:
+                os.makedirs(MODEL_DIR, exist_ok=True)
+                parsed = urlparse(model_url_input)
+                # save to configured filename
+                save_path = os.path.join(MODEL_DIR, sel_filename)
+                with requests.get(model_url_input, stream=True, timeout=30) as r:
+                    r.raise_for_status()
+                    with open(save_path, 'wb') as f:
+                        for chunk in r.iter_content(chunk_size=8192):
+                            if chunk:
+                                f.write(chunk)
+                st.sidebar.success(f"Downloaded model to {save_path}")
+            except Exception as e:
+                st.sidebar.error(f"Download failed: {e}")
 
     # preprocessing option
     preprocess_mode = st.sidebar.selectbox("Preprocessing", ["Auto", "0-1", "-1-1"], help="Auto detects model Rescaling; 0-1 divides by 255; -1-1 scales to [-1,1]")
