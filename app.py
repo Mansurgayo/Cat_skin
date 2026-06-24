@@ -1,4 +1,5 @@
 import os
+import io
 import streamlit as st
 try:
     import tensorflow as tf
@@ -32,6 +33,21 @@ def remote_predict(api_url, image_bytes):
             return np.asarray([data["prediction"]], dtype=float)
     except Exception:
         return None
+
+
+def mock_predict(image_bytes, n_classes=4):
+    """Deterministic mock prediction derived from image bytes.
+    Returns a numpy array of probabilities summing to 1.
+    """
+    import hashlib
+
+    h = hashlib.sha256(image_bytes).digest()
+    # use first n_classes bytes to build scores
+    scores = np.frombuffer(h[: n_classes], dtype=np.uint8).astype(np.float32)
+    # avoid zeros
+    scores = scores + 1.0
+    probs = scores / scores.sum()
+    return probs
 
 
 def download_model_from_env():
@@ -162,6 +178,10 @@ def main():
     available_models = [name for name in MODEL_DISPLAY_NAMES]
     model_choice = st.sidebar.selectbox("Select model", available_models)
 
+    # remote inference API URL (can be set as env MODEL_API_URL in Streamlit)
+    default_api = os.environ.get("MODEL_API_URL", "")
+    api_url = st.sidebar.text_input("Remote inference API URL (optional)", value=default_api)
+
     # optional: allow user to provide public URL to download model file
     sel_filename = MODEL_DISPLAY_NAMES.get(model_choice)
     model_url_input = st.sidebar.text_input("Model file URL (optional)", value="")
@@ -238,7 +258,9 @@ def main():
         st.info("Upload an image in the center area and click Predict.")
         return
 
-    img = Image.open(uploaded)
+    # read uploaded bytes early so we can use them for remote/mock predictions
+    uploaded_bytes = uploaded.read()
+    img = Image.open(io.BytesIO(uploaded_bytes))
     # make image larger and put visualization to the right
     image_col, viz_col = st.columns([3, 2])
     with image_col:
@@ -246,62 +268,91 @@ def main():
 
     if st.button("Predict"):
         with st.spinner("Loading model and predicting..."):
+            # try download from MODEL_URL env var if present
+            _ = download_model_from_env()
             model_path = get_model_path(model_choice)
-            if not model_path or not os.path.exists(model_path):
-                st.error(f"Model file not found for {model_choice}.")
-                return
-            try:
-                model = load_keras_model(model_path)
-            except Exception as e:
-                st.error(f"Failed to load model: {e}")
-                return
 
-            target_size = get_model_input_size(model)
-            st.write("Model input shape:", getattr(model, 'input_shape', 'unknown'))
-
-            # detect if model contains a Rescaling layer
-            try:
-                has_rescaling = any((layer.__class__.__name__.lower().find('rescaling') != -1) for layer in model.layers)
-            except Exception:
-                has_rescaling = False
-
-            # detect last layer activation name
-            try:
-                last = model.layers[-1]
-                act = getattr(last, 'activation', None)
-                act_name = act.__name__ if callable(act) else str(act)
-            except Exception:
-                act_name = 'unknown'
-
-            # choose preprocessing mode
-            if preprocess_mode == 'Auto':
-                if has_rescaling:
-                    mode_to_apply = 'model'  # model contains Rescaling; send raw pixel values
-                else:
-                    mode_to_apply = '0-1'
-            else:
-                mode_to_apply = preprocess_mode
-
-            st.write(f"Detected Rescaling layer: {has_rescaling}, last activation: {act_name}, using preprocess: {mode_to_apply}")
-
-            # prepare test modes: always compare 0-1 and -1-1; include 'model' if model has Rescaling
-            modes_to_test = ["0-1", "-1-1"]
-            if has_rescaling:
-                # include 'model' so user can see model-rescaling behavior
-                modes_to_test.insert(0, "model")
-
-            results = {}
-            for m in modes_to_test:
+            model = None
+            if HAVE_TF and model_path and os.path.exists(model_path):
                 try:
-                    arr = preprocess_image(img, target_size, mode=m)
-                    # show basic diagnostics for the selected mode only
-                    if m == mode_to_apply:
-                        st.write("Image array shape:", arr.shape)
-                        st.write(f"Image min/max: {arr.min():.6f} / {arr.max():.6f}")
-                    i_idx, i_prob, i_probs = predict(model, arr)
-                    results[m] = (i_idx, i_prob, i_probs)
+                    model = load_keras_model(model_path)
                 except Exception as e:
-                    results[m] = (None, None, None)
+                    st.error(f"Failed to load local model: {e}")
+
+            # if no local model, try remote API
+            used_remote = False
+            remote_probs = None
+            if model is None:
+                if api_url:
+                    remote_probs = remote_predict(api_url, uploaded_bytes)
+                    if remote_probs is not None:
+                        used_remote = True
+                else:
+                    # no API configured and no TF model available — use mock mode
+                    remote_probs = mock_predict(uploaded_bytes, n_classes=len(labels) if labels else 4)
+                    used_remote = True
+
+            if model is None and not used_remote:
+                st.error(f"Model file not available and no remote API configured for {model_choice}.")
+                return
+
+            if used_remote:
+                # we received probabilities directly from remote or mock
+                probs = np.asarray(remote_probs, dtype=float)
+                # ensure size matches labels if provided
+                n = probs.size
+                results = {"remote": (int(np.argmax(probs)), float(np.max(probs)), probs)}
+                modes_to_test = ["remote"]
+                mode_to_apply = "remote"
+                target_size = (224, 224)
+                st.write("Running in remote/mock mode — local TensorFlow model not used.")
+            else:
+                target_size = get_model_input_size(model)
+                st.write("Model input shape:", getattr(model, 'input_shape', 'unknown'))
+
+                # detect if model contains a Rescaling layer
+                try:
+                    has_rescaling = any((layer.__class__.__name__.lower().find('rescaling') != -1) for layer in model.layers)
+                except Exception:
+                    has_rescaling = False
+
+                # detect last layer activation name
+                try:
+                    last = model.layers[-1]
+                    act = getattr(last, 'activation', None)
+                    act_name = act.__name__ if callable(act) else str(act)
+                except Exception:
+                    act_name = 'unknown'
+
+                # choose preprocessing mode
+                if preprocess_mode == 'Auto':
+                    if has_rescaling:
+                        mode_to_apply = 'model'  # model contains Rescaling; send raw pixel values
+                    else:
+                        mode_to_apply = '0-1'
+                else:
+                    mode_to_apply = preprocess_mode
+
+                st.write(f"Detected Rescaling layer: {has_rescaling}, last activation: {act_name}, using preprocess: {mode_to_apply}")
+
+                # prepare test modes: always compare 0-1 and -1-1; include 'model' if model has Rescaling
+                modes_to_test = ["0-1", "-1-1"]
+                if has_rescaling:
+                    # include 'model' so user can see model-rescaling behavior
+                    modes_to_test.insert(0, "model")
+
+                results = {}
+                for m in modes_to_test:
+                    try:
+                        arr = preprocess_image(img, target_size, mode=m)
+                        # show basic diagnostics for the selected mode only
+                        if m == mode_to_apply:
+                            st.write("Image array shape:", arr.shape)
+                            st.write(f"Image min/max: {arr.min():.6f} / {arr.max():.6f}")
+                        i_idx, i_prob, i_probs = predict(model, arr)
+                        results[m] = (i_idx, i_prob, i_probs)
+                    except Exception as e:
+                        results[m] = (None, None, None)
 
             # choose effective labels based on one of the results (they should share size)
             sample_probs = next((v[2] for v in results.values() if v[2] is not None), None)
