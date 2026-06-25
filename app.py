@@ -202,6 +202,11 @@ def main():
     st.sidebar.write("Model files in `model/` folder:")
     for display_name, filename in MODEL_DISPLAY_NAMES.items():
         st.sidebar.write(f"- **{display_name}**: {filename}")
+    
+    # remote API from environment (preferred if provided)
+    api_url = os.environ.get("MODEL_API_URL", "")
+    if api_url:
+        st.sidebar.success("Remote inference API configured")
 
     st.markdown("---")
     st.markdown("### Upload Image")
@@ -229,10 +234,22 @@ def main():
                 except Exception as e:
                     st.error(f"Failed to load local model: {e}")
 
-            # if no local model, stop and show an error
+            # If no local model, try remote API if configured; otherwise fallback to mock
             if model is None:
-                st.error(f"Model file not available for {model_choice}. Please place the correct local model file in the `model/` folder.")
-                return
+                if api_url:
+                    remote_probs = remote_predict(api_url, uploaded_bytes)
+                    if remote_probs is None:
+                        st.error("Remote inference failed or returned invalid response.")
+                        return
+                    probs = np.asarray(remote_probs, dtype=float)
+                    results = {"remote": (int(np.argmax(probs)), float(np.max(probs)), probs)}
+                    mode_to_apply = "remote"
+                else:
+                    st.info("No local model found and no remote API configured — using mock predictions.")
+                    probs = mock_predict(uploaded_bytes, n_classes=len(labels) if labels else 4)
+                    probs = np.asarray(probs, dtype=float)
+                    results = {"mock": (int(np.argmax(probs)), float(np.max(probs)), probs)}
+                    mode_to_apply = "mock"
             else:
                 target_size = get_model_input_size(model)
 
