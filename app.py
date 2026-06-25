@@ -172,38 +172,14 @@ def get_model_path(display_name):
 
 
 def main():
-    st.title("Skin Disease Classifier — Streamlit")
+    st.title("🐱 Skin Disease Classifier — Streamlit")
     st.sidebar.header("Model & Labels")
 
     available_models = [name for name in MODEL_DISPLAY_NAMES]
     model_choice = st.sidebar.selectbox("Select model", available_models)
-
-    # remote inference API URL (can be set as env MODEL_API_URL in Streamlit)
-    default_api = os.environ.get("MODEL_API_URL", "")
-    api_url = st.sidebar.text_input("Remote inference API URL (optional)", value=default_api)
-
-    # optional: allow user to provide public URL to download model file
-    sel_filename = MODEL_DISPLAY_NAMES.get(model_choice)
-    model_url_input = st.sidebar.text_input("Model file URL (optional)", value="")
-    if model_url_input:
-        if st.sidebar.button("Download model"):
-            try:
-                os.makedirs(MODEL_DIR, exist_ok=True)
-                parsed = urlparse(model_url_input)
-                # save to configured filename
-                save_path = os.path.join(MODEL_DIR, sel_filename)
-                with requests.get(model_url_input, stream=True, timeout=30) as r:
-                    r.raise_for_status()
-                    with open(save_path, 'wb') as f:
-                        for chunk in r.iter_content(chunk_size=8192):
-                            if chunk:
-                                f.write(chunk)
-                st.sidebar.success(f"Downloaded model to {save_path}")
-            except Exception as e:
-                st.sidebar.error(f"Download failed: {e}")
-
-    # preprocessing option
-    preprocess_mode = st.sidebar.selectbox("Preprocessing", ["Auto", "0-1", "-1-1"], help="Auto detects model Rescaling; 0-1 divides by 255; -1-1 scales to [-1,1]")
+    
+    # use default preprocessing mode
+    preprocess_mode = "Auto"
 
     # option to use per-model default labels
     use_model_labels = st.sidebar.checkbox("Use model default labels (if available)", value=True)
@@ -222,28 +198,6 @@ def main():
     )
     labels = [l.strip() for l in labels_text.splitlines() if l.strip()]
 
-    # debug controls
-    if st.sidebar.button("Show model summary"):
-        model_path_dbg = get_model_path(model_choice)
-        if not model_path_dbg or not os.path.exists(model_path_dbg):
-            st.sidebar.error("Model file not found for selected model.")
-        else:
-            try:
-                m = load_keras_model(model_path_dbg)
-                st.sidebar.write(f"Loaded: {model_path_dbg}")
-                # capture summary
-                summary_lines = []
-                m.summary(print_fn=lambda s: summary_lines.append(s))
-                st.sidebar.text('\n'.join(summary_lines))
-                # last layer info
-                try:
-                    last = m.layers[-1]
-                    st.sidebar.write(f"Last layer: {type(last).__name__}, output shape: {last.output_shape}")
-                except Exception:
-                    pass
-            except Exception as e:
-                st.sidebar.error(f"Failed to load model: {e}")
-
     st.sidebar.markdown("---")
     st.sidebar.write("Model files in `model/` folder:")
     for display_name, filename in MODEL_DISPLAY_NAMES.items():
@@ -261,10 +215,8 @@ def main():
     # read uploaded bytes early so we can use them for remote/mock predictions
     uploaded_bytes = uploaded.read()
     img = Image.open(io.BytesIO(uploaded_bytes))
-    # make image larger and put visualization to the right
-    image_col, viz_col = st.columns([3, 2])
-    with image_col:
-        st.image(img, caption="Uploaded image", use_container_width=True)
+    # display image with full width
+    st.image(img, caption="Uploaded image", use_container_width=True)
 
     if st.button("Predict"):
         with st.spinner("Loading model and predicting..."):
@@ -279,36 +231,11 @@ def main():
                 except Exception as e:
                     st.error(f"Failed to load local model: {e}")
 
-            # if no local model, try remote API
-            used_remote = False
-            remote_probs = None
             if model is None:
-                if api_url:
-                    remote_probs = remote_predict(api_url, uploaded_bytes)
-                    if remote_probs is not None:
-                        used_remote = True
-                else:
-                    # no API configured and no TF model available — use mock mode
-                    remote_probs = mock_predict(uploaded_bytes, n_classes=len(labels) if labels else 4)
-                    used_remote = True
-
-            if model is None and not used_remote:
-                st.error(f"Model file not available and no remote API configured for {model_choice}.")
+                st.error(f"Model file not available for {model_choice}.")
                 return
-
-            if used_remote:
-                # we received probabilities directly from remote or mock
-                probs = np.asarray(remote_probs, dtype=float)
-                # ensure size matches labels if provided
-                n = probs.size
-                results = {"remote": (int(np.argmax(probs)), float(np.max(probs)), probs)}
-                modes_to_test = ["remote"]
-                mode_to_apply = "remote"
-                target_size = (224, 224)
-                st.write("Running in remote/mock mode — local TensorFlow model not used.")
             else:
                 target_size = get_model_input_size(model)
-                st.write("Model input shape:", getattr(model, 'input_shape', 'unknown'))
 
                 # detect if model contains a Rescaling layer
                 try:
@@ -333,8 +260,6 @@ def main():
                 else:
                     mode_to_apply = preprocess_mode
 
-                st.write(f"Detected Rescaling layer: {has_rescaling}, last activation: {act_name}, using preprocess: {mode_to_apply}")
-
                 # prepare test modes: always compare 0-1 and -1-1; include 'model' if model has Rescaling
                 modes_to_test = ["0-1", "-1-1"]
                 if has_rescaling:
@@ -345,10 +270,6 @@ def main():
                 for m in modes_to_test:
                     try:
                         arr = preprocess_image(img, target_size, mode=m)
-                        # show basic diagnostics for the selected mode only
-                        if m == mode_to_apply:
-                            st.write("Image array shape:", arr.shape)
-                            st.write(f"Image min/max: {arr.min():.6f} / {arr.max():.6f}")
                         i_idx, i_prob, i_probs = predict(model, arr)
                         results[m] = (i_idx, i_prob, i_probs)
                     except Exception as e:
@@ -365,31 +286,6 @@ def main():
                 eff_labels = [f"Class {i}" for i in range(n)]
                 if len(labels) != n:
                     st.warning("Label count does not match model output; using generated labels.")
-
-            # show comparison columns
-            cols = st.columns(len(modes_to_test))
-            for idx_col, m in enumerate(modes_to_test):
-                col = cols[idx_col]
-                col.subheader(f"Mode: {m}" + (" (selected)" if m == mode_to_apply else ""))
-                r = results.get(m)
-                if r is None or r[0] is None:
-                    col.write("Failed")
-                    continue
-                i_idx, i_prob, i_probs = r
-                name = eff_labels[i_idx] if i_idx < len(eff_labels) else f"Class {i_idx}"
-                col.success(f"Top: {name} — {i_prob*100.0:.2f}%")
-                # top-3
-                k = min(3, i_probs.size)
-                top_idx = np.argsort(i_probs)[-k:][::-1]
-                for j in top_idx:
-                    lbl = eff_labels[j] if j < len(eff_labels) else f"Class {j}"
-                    col.write(f"{lbl} — {i_probs[j]*100.0:.2f}%")
-                if i_probs.size <= 50:
-                    dfm = pd.DataFrame({"Label": [eff_labels[i] for i in range(len(i_probs))], "Probability": i_probs * 100.0})
-                    dfm = dfm.set_index("Label")["Probability"]
-                    col.bar_chart(dfm)
-                else:
-                    col.write("(Detailed probabilities hidden)")
 
             # use results for the selected mode to present the detailed table below
             chosen = results.get(mode_to_apply)
