@@ -220,7 +220,7 @@ def main():
 
     if st.button("Predict"):
         with st.spinner("Loading model and predicting..."):
-            model_path = local_model_path or get_model_path(model_choice)
+            model_path = get_model_path(model_choice)
 
             model = None
             if HAVE_TF and model_path and os.path.exists(model_path):
