@@ -177,27 +177,22 @@ def main():
 
     available_models = [name for name in MODEL_DISPLAY_NAMES]
     model_choice = st.sidebar.selectbox("Select model", available_models)
-    
-    # optional: allow user to provide public URL to download model file
+
+    # optional: allow user to upload a local model file
     sel_filename = MODEL_DISPLAY_NAMES.get(model_choice)
-    model_url_input = st.sidebar.text_input("Model file URL (optional)", value="")
-    if model_url_input:
-        if st.sidebar.button("Download model"):
-            try:
-                os.makedirs(MODEL_DIR, exist_ok=True)
-                parsed = urlparse(model_url_input)
-                # save to configured filename
-                save_path = os.path.join(MODEL_DIR, sel_filename)
-                with requests.get(model_url_input, stream=True, timeout=30) as r:
-                    r.raise_for_status()
-                    with open(save_path, 'wb') as f:
-                        for chunk in r.iter_content(chunk_size=8192):
-                            if chunk:
-                                f.write(chunk)
-                st.sidebar.success(f"Downloaded model to {save_path}")
-            except Exception as e:
-                st.sidebar.error(f"Download failed: {e}")
-    
+    local_model_file = st.sidebar.file_uploader("Upload local model file (optional)", type=["h5", "keras", "hdf5"])
+    local_model_path = None
+    if local_model_file is not None:
+        try:
+            os.makedirs(MODEL_DIR, exist_ok=True)
+            save_path = os.path.join(MODEL_DIR, sel_filename)
+            with open(save_path, "wb") as f:
+                f.write(local_model_file.getbuffer())
+            st.sidebar.success(f"Saved local model to {save_path}")
+            local_model_path = save_path
+        except Exception as e:
+            st.sidebar.error(f"Failed to save local model: {e}")
+
     # use default preprocessing mode
     preprocess_mode = "Auto"
 
@@ -240,9 +235,7 @@ def main():
 
     if st.button("Predict"):
         with st.spinner("Loading model and predicting..."):
-            # try download from MODEL_URL env var if present
-            _ = download_model_from_env()
-            model_path = get_model_path(model_choice)
+            model_path = local_model_path or get_model_path(model_choice)
 
             model = None
             if HAVE_TF and model_path and os.path.exists(model_path):
@@ -253,7 +246,7 @@ def main():
 
             # if no local model, use mock predictions
             if model is None:
-                st.info("Using mock predictions (model file not available locally). Upload a model file or provide a download URL in the sidebar.")
+                st.info("Using mock predictions (model file not available locally). Upload a model file in the sidebar.")
                 probs = mock_predict(uploaded_bytes, n_classes=len(labels) if labels else 4)
                 probs = np.asarray(probs, dtype=float)
                 results = {"mock": (int(np.argmax(probs)), float(np.max(probs)), probs)}
