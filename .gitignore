@@ -21,10 +21,12 @@ Thumbs.db
 *.log
 
 # Models and large files
-model/
+# model/
 *.h5
 *.keras
 *.hdf5
+!model/mobilenetv2_cat_skin_disease.h5
+!model/efficientnetb1_cat_skin_disease_final.keras
 
 # Streamlit cache
 .streamlit/
