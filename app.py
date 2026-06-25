@@ -178,6 +178,26 @@ def main():
     available_models = [name for name in MODEL_DISPLAY_NAMES]
     model_choice = st.sidebar.selectbox("Select model", available_models)
     
+    # optional: allow user to provide public URL to download model file
+    sel_filename = MODEL_DISPLAY_NAMES.get(model_choice)
+    model_url_input = st.sidebar.text_input("Model file URL (optional)", value="")
+    if model_url_input:
+        if st.sidebar.button("Download model"):
+            try:
+                os.makedirs(MODEL_DIR, exist_ok=True)
+                parsed = urlparse(model_url_input)
+                # save to configured filename
+                save_path = os.path.join(MODEL_DIR, sel_filename)
+                with requests.get(model_url_input, stream=True, timeout=30) as r:
+                    r.raise_for_status()
+                    with open(save_path, 'wb') as f:
+                        for chunk in r.iter_content(chunk_size=8192):
+                            if chunk:
+                                f.write(chunk)
+                st.sidebar.success(f"Downloaded model to {save_path}")
+            except Exception as e:
+                st.sidebar.error(f"Download failed: {e}")
+    
     # use default preprocessing mode
     preprocess_mode = "Auto"
 
@@ -231,9 +251,13 @@ def main():
                 except Exception as e:
                     st.error(f"Failed to load local model: {e}")
 
+            # if no local model, use mock predictions
             if model is None:
-                st.error(f"Model file not available for {model_choice}.")
-                return
+                st.info("Using mock predictions (model file not available locally). Upload a model file or provide a download URL in the sidebar.")
+                probs = mock_predict(uploaded_bytes, n_classes=len(labels) if labels else 4)
+                probs = np.asarray(probs, dtype=float)
+                results = {"mock": (int(np.argmax(probs)), float(np.max(probs)), probs)}
+                mode_to_apply = "mock"
             else:
                 target_size = get_model_input_size(model)
 
