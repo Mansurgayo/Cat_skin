@@ -220,8 +220,8 @@ def main():
     # read uploaded bytes early so we can use them for remote/mock predictions
     uploaded_bytes = uploaded.read()
     img = Image.open(io.BytesIO(uploaded_bytes))
-    # display image with full width
-    st.image(img, caption="Uploaded image", use_container_width=True)
+    # display image with full width using the newer Streamlit API
+    st.image(img, caption="Uploaded image", width="stretch")
 
     if st.button("Predict"):
         with st.spinner("Loading model and predicting..."):
