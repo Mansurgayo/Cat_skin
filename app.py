@@ -178,21 +178,6 @@ def main():
     available_models = [name for name in MODEL_DISPLAY_NAMES]
     model_choice = st.sidebar.selectbox("Select model", available_models)
 
-    # optional: allow user to upload a local model file
-    sel_filename = MODEL_DISPLAY_NAMES.get(model_choice)
-    local_model_file = st.sidebar.file_uploader("Upload local model file (optional)", type=["h5", "keras", "hdf5"])
-    local_model_path = None
-    if local_model_file is not None:
-        try:
-            os.makedirs(MODEL_DIR, exist_ok=True)
-            save_path = os.path.join(MODEL_DIR, sel_filename)
-            with open(save_path, "wb") as f:
-                f.write(local_model_file.getbuffer())
-            st.sidebar.success(f"Saved local model to {save_path}")
-            local_model_path = save_path
-        except Exception as e:
-            st.sidebar.error(f"Failed to save local model: {e}")
-
     # use default preprocessing mode
     preprocess_mode = "Auto"
 
@@ -244,13 +229,10 @@ def main():
                 except Exception as e:
                     st.error(f"Failed to load local model: {e}")
 
-            # if no local model, use mock predictions
+            # if no local model, stop and show an error
             if model is None:
-                st.info("Using mock predictions (model file not available locally). Upload a model file in the sidebar.")
-                probs = mock_predict(uploaded_bytes, n_classes=len(labels) if labels else 4)
-                probs = np.asarray(probs, dtype=float)
-                results = {"mock": (int(np.argmax(probs)), float(np.max(probs)), probs)}
-                mode_to_apply = "mock"
+                st.error(f"Model file not available for {model_choice}. Please place the correct local model file in the `model/` folder.")
+                return
             else:
                 target_size = get_model_input_size(model)
 
